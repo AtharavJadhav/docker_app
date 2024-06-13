@@ -1,0 +1,11 @@
+fastapi
+pydantic
+uvicorn
+python-multipart
+docker
+numpy
+tritonclient[http]
+pillow
+pandas
+scipy
+opencv-python

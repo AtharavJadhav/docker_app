@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  fastapi_app:
+    build:
+      context: ./app
+    networks:
+      - my_network
+    ports:
+      - "5000:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Mount the Docker socket
+      - permanent_storage:/home/atharav/react/docker_app/app/permanent_storage # Mount the permanent storage directory
+
+  client:
+    build:
+      context: ./client
+    networks:
+      - my_network
+    ports:
+      - "3000:3000"
+
+  admin:
+    build:
+      context: ./admin
+    networks:
+      - my_network
+    ports:
+      - "3001:3000"
+
+networks:
+  my_network:
+    driver: bridge
+
+volumes:
+  permanent_storage:
