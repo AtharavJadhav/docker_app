@@ -82,17 +82,20 @@ async def deploy_models(request_body: DeployModelsRequest):
     try:
         # Debugging: print current working directory and model repository path
         current_working_directory = os.getcwd()
+        parent_directory = os.path.basename(os.path.dirname(current_working_directory))
+        network_name = f"{parent_directory}_my_network"
         model_repo_path = os.path.join(current_working_directory, 'model_repository')
         logger.info(f"Current working directory: {current_working_directory}")
         logger.info(f"Model repository path: {model_repo_path}")
-
+        logger.info(f"Network name: {network_name}")
+        
         # Run the triton_server container with the specified models and connect it to the same network
         triton_container = docker_client.containers.run(
             'nvcr.io/nvidia/tritonserver:24.04-py3',
             docker_run_command,
             detach=True,
             name="triton_server",
-            network="docker_app_my_network",
+            network=network_name,
             ports={'8000/tcp': 8000, '8001/tcp': 8001, '8002/tcp': 8002},
             volumes={model_repo_path: {'bind': '/models', 'mode': 'rw'}},
             shm_size="256m",
