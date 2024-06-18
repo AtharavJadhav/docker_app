@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List
 import subprocess
-from scipy.stats import entropy
+import pandas as pd
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -37,11 +37,6 @@ triton_container = None
 # Metrics dictionary
 metrics = {}
 
-# In-memory store for metrics
-metrics_store = {}
-
-# Threshold for KL divergence
-KL_THRESHOLD = 0.5
 
 class DeployModelsRequest(BaseModel):
     models: List[str] = Field(..., example=["mnist_model_onnx", "mnist_model_openvino"])
@@ -49,6 +44,8 @@ class DeployModelsRequest(BaseModel):
 class InferenceRequest(BaseModel):
     model_name: str
     correct: bool = None
+class MetricsRequest(BaseModel):
+    model_name: str
 
 @app.on_event("startup")
 async def startup_event():
@@ -91,7 +88,7 @@ async def deploy_models(request_body: DeployModelsRequest):
         
         # Run the triton_server container with the specified models and connect it to the same network
         triton_container = docker_client.containers.run(
-            'nvcr.io/nvidia/tritonserver:24.04-py3',
+            'nvcr.io/nvidia/tritonserver:24.05-py3',
             docker_run_command,
             detach=True,
             name="triton_server",
@@ -111,13 +108,9 @@ async def deploy_models(request_body: DeployModelsRequest):
                 "request_count": 0,
                 "correct_count": 0,
                 "total_latency": 0,
-            }
-
-            # Initialize metrics store for each model
-            metrics_store[model] = {
-                "kl_divergence": None,
-                "average_inference_histogram": [],
-                "retraining_needed": "Not Needed"
+                "data_shift": 0,
+                "mean_shift": 0,
+                "std_shift": 0
             }
 
         return {"message": "Models deployed successfully"}
@@ -225,82 +218,55 @@ async def submit_feedback(request_body: InferenceRequest):
 async def get_metrics():
     return metrics
 
-# Calculate the histogram of an image
-def calculate_histogram(image, bins=256):
-    histogram = cv2.calcHist([image], [0, 1, 2], None, [bins, bins, bins], [0, 256, 0, 256, 0, 256])
-    histogram = cv2.normalize(histogram, histogram).flatten()
-    return histogram
+# Endpoint to calculate data shift metrics
+@app.post("/calculate_shift_metrics/")
+async def get_data_shift_metrics(request_body: MetricsRequest):
+    model_name = request_body.model_name
+    try:
+        # Load training data
+        training_dir = os.path.join("training_images", model_name)
+        if not os.path.exists(training_dir):
+            raise HTTPException(status_code=404, detail=f"Training data not found for model: {model_name}")
 
-# Compute histograms for all images in a directory
-def compute_reference_histograms(image_dir):
-    histograms = []
-    for filename in os.listdir(image_dir):
-        if filename.endswith(".jpg") or filename.endswith(".png"):
-            image_path = os.path.join(image_dir, filename)
-            image = cv2.imread(image_path)
-            if image is not None:
-                histogram = calculate_histogram(image)
-                histograms.append(histogram)
-    return histograms
+        # Load newly uploaded data
+        storage_dir = os.path.join("permanent_storage", model_name)
+        if not os.path.exists(storage_dir):
+            raise HTTPException(status_code=404, detail=f"No current data found for model: {model_name}")
 
-# Calculate KL divergence between two histograms
-def calculate_kl_divergence(p, q):
-    p = p / np.sum(p)
-    q = q / np.sum(q)
-    return entropy(p, q)
+        # Assuming both training_dir and storage_dir contain image files
+   
+        # Step 1: Get all image file paths
+        training_images = [os.path.join(training_dir, f) for f in os.listdir(training_dir) if f.endswith('.jpg') or f.endswith('.png')]
+        storage_images = [os.path.join(storage_dir, f) for f in os.listdir(storage_dir) if f.endswith('.jpg') or f.endswith('.png')]
+    
+        # Step 2: Calculate statistics on images
+        def calculate_stats(images):
+            means = []
+            stds = []
+            for img_path in images:
+                img = cv2.imread(img_path)
+                # Calculate mean and standard deviation for each channel
+                mean, std = cv2.meanStdDev(img)
+                means.append(mean.flatten())
+                stds.append(std.flatten())
+            return np.mean(means, axis=0), np.mean(stds, axis=0)
+    
+        # Step 3: Compute statistics for both sets of images
+        training_mean, training_std = calculate_stats(training_images)
+        storage_mean, storage_std = calculate_stats(storage_images)
+    
+        # Step 4: Calculate overall data shift
+        overall_mean_shift = np.linalg.norm(training_mean - storage_mean)
+        overall_std_shift = np.linalg.norm(training_std - storage_std)
+    
+        overall_data_shift = np.sqrt(overall_mean_shift**2 + overall_std_shift**2) / 100
+    
+        metrics[model_name]["data_shift"] = overall_data_shift
+        metrics[model_name]["mean_shift"] = overall_mean_shift
+        metrics[model_name]["std_shift"] = overall_std_shift
 
-# Calculate KL divergence and average inference histogram
-def get_histogram_kl_divergence(new_images, reference_histograms):
-    kl_divergences = []
-    inference_histograms = []
-    for new_image in new_images:
-        new_histogram = calculate_histogram(new_image)
-        inference_histograms.append(new_histogram)
-        kl_divergence = np.mean([calculate_kl_divergence(new_histogram, ref_hist) for ref_hist in reference_histograms])
-        kl_divergences.append(kl_divergence)
-    average_inference_histogram = np.mean(inference_histograms, axis=0)
-    return kl_divergences, average_inference_histogram
+        return {"data_shift": overall_data_shift, "mean_shift": overall_mean_shift, "std_shift": overall_std_shift, "model_name": model_name, "status": "success", "message": "Data shift metrics calculated successfully"}
 
-@app.post("/compute_kl")
-async def compute_kl(model_name: str = Form(...)):
-    if model_name not in metrics_store:
-        raise HTTPException(status_code=404, detail="Model not found")
-
-    permanent_dir = os.path.join("permanent_storage", model_name)
-    if not os.path.exists(permanent_dir):
-        raise HTTPException(status_code=404, detail="No inference files found for this model")
-
-    new_images = []
-    for filename in os.listdir(permanent_dir):
-        if filename.endswith(".jpg") or filename.endswith(".png"):
-            image_path = os.path.join(permanent_dir, filename)
-            image = cv2.imread(image_path)
-            if image is not None:
-                new_images.append(image)
-
-    if not new_images:
-        raise HTTPException(status_code=404, detail="No valid image files found for this model")
-
-    # Compute reference histograms (this should ideally be precomputed and loaded)
-    training_image_dir = f"training_images/{model_name}"
-    reference_histograms = compute_reference_histograms(training_image_dir)
-    if not reference_histograms:
-        raise HTTPException(status_code=404, detail="No reference histograms found for this model")
-
-    kl_divergences, average_inference_histogram = get_histogram_kl_divergence(new_images, reference_histograms)
-
-    # Update metrics_store with the latest KL divergence value and average inference histogram
-    if kl_divergences:
-        kl_value = np.mean(kl_divergences)
-        metrics_store[model_name]["kl_divergence"] = kl_value
-        metrics_store[model_name]["average_inference_histogram"] = average_inference_histogram.tolist()
-        if kl_value > KL_THRESHOLD:
-            metrics_store[model_name]["retraining_needed"] = "Retraining Needed"
-        else:
-            metrics_store[model_name]["retraining_needed"] = "Not Needed"
-
-    return JSONResponse(content={
-        "kl_divergences": kl_divergences,
-        "average_inference_histogram": average_inference_histogram.tolist(),
-        "retraining_needed": metrics_store[model_name]["retraining_needed"]
-    })
+    except Exception as e:
+        logger.error(f"Error calculating data shift metrics: {str(e)}")
+        return JSONResponse(status_code=500, content={"detail": "Failed to calculate data shift metrics"})

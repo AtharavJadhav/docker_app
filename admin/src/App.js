@@ -3,7 +3,7 @@ import React, { useState, useEffect } from "react";
 function App() {
   const [selectedModels, setSelectedModels] = useState([]);
   const [metrics, setMetrics] = useState({});
-  const [dataShiftMetrics, setDataShiftMetrics] = useState({});
+  const [selectedModelForShift, setSelectedModelForShift] = useState("");
 
   const handleDeploy = async () => {
     try {
@@ -43,28 +43,46 @@ function App() {
     }
   };
 
-  const fetchDataShiftMetrics = async (modelName) => {
+  const handleCalculateDataShift = async () => {
+    if (!selectedModelForShift) {
+      console.error("No model selected for data shift calculation");
+      return;
+    }
+
     try {
-      const response = await fetch(`http://localhost:5000/compute_kl`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({ model_name: modelName }),
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      const data = await response.json();
-      setDataShiftMetrics((prev) => ({
-        ...prev,
-        [modelName]: data,
-      }));
-    } catch (error) {
-      console.error(
-        `Failed to fetch data shift metrics for ${modelName}:`,
-        error
+      const response = await fetch(
+        "http://localhost:5000/calculate_shift_metrics/",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ model_name: selectedModelForShift }),
+        }
       );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error(
+          `HTTP error! status: ${response.status}`,
+          errorData.detail
+        );
+      } else {
+        const data = await response.json();
+        console.log("Data shift metrics:", data);
+        // Optionally update the state with the new data shift metrics
+        setMetrics((prevMetrics) => ({
+          ...prevMetrics,
+          [data.model_name]: {
+            ...prevMetrics[data.model_name],
+            data_shift: data.data_shift,
+            mean_shift: data.mean_shift,
+            std_shift: data.std_shift,
+          },
+        }));
+      }
+    } catch (error) {
+      console.error("Failed to calculate data shift:", error);
     }
   };
 
@@ -81,8 +99,8 @@ function App() {
       />
       <ModelMetrics
         metrics={metrics}
-        dataShiftMetrics={dataShiftMetrics}
-        fetchDataShiftMetrics={fetchDataShiftMetrics}
+        setSelectedModelForShift={setSelectedModelForShift}
+        handleCalculateDataShift={handleCalculateDataShift}
       />
     </div>
   );
@@ -144,7 +162,11 @@ function ModelDeploy({ setSelectedModels, handleDeploy }) {
   );
 }
 
-function ModelMetrics({ metrics, dataShiftMetrics, fetchDataShiftMetrics }) {
+function ModelMetrics({
+  metrics,
+  setSelectedModelForShift,
+  handleCalculateDataShift,
+}) {
   return (
     <div>
       <h2>Model Metrics</h2>
@@ -156,10 +178,10 @@ function ModelMetrics({ metrics, dataShiftMetrics, fetchDataShiftMetrics }) {
             <th>Latency (s)</th>
             <th>Throughput (req/s)</th>
             <th>Request Count</th>
-            <th>KL Divergence</th>
-            <th>Average Inference Histogram</th>
-            <th>Retraining Needed</th>
-            <th>Actions</th>
+            <th>Data Shift</th>
+            <th>Mean Shift</th>
+            <th>Std Shift</th>
+            <th>Calculate Data Shift</th>
           </tr>
         </thead>
         <tbody>
@@ -170,30 +192,18 @@ function ModelMetrics({ metrics, dataShiftMetrics, fetchDataShiftMetrics }) {
               <td>{metrics[modelName].latency.toFixed(4)}</td>
               <td>{metrics[modelName].throughput.toFixed(2)}</td>
               <td>{metrics[modelName].request_count}</td>
+              <td>{metrics[modelName].data_shift.toFixed(4)}</td>
+              <td>{metrics[modelName].mean_shift.toFixed(4)}</td>
+              <td>{metrics[modelName].std_shift.toFixed(4)}</td>
               <td>
-                {dataShiftMetrics[modelName] &&
-                dataShiftMetrics[modelName].kl_divergence !== null
-                  ? dataShiftMetrics[modelName].kl_divergence.toFixed(4)
-                  : "N/A"}
-              </td>
-              <td>
-                {dataShiftMetrics[modelName] &&
-                dataShiftMetrics[modelName].average_inference_histogram.length >
-                  0
-                  ? JSON.stringify(
-                      dataShiftMetrics[modelName].average_inference_histogram
-                    )
-                  : "N/A"}
-              </td>
-              <td>
-                {dataShiftMetrics[modelName]
-                  ? dataShiftMetrics[modelName].retraining_needed
-                  : "N/A"}
-              </td>
-              <td>
-                <Button onClick={() => fetchDataShiftMetrics(modelName)}>
-                  Calculate Data Shift
-                </Button>
+                <button
+                  onClick={() => {
+                    setSelectedModelForShift(modelName);
+                    handleCalculateDataShift();
+                  }}
+                >
+                  Calculate
+                </button>
               </td>
             </tr>
           ))}
