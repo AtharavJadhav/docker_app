@@ -10,7 +10,11 @@ services:
       - "5000:80"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Mount the Docker socket
-      - permanent_storage:/home/atharav/react/docker_app/app/permanent_storage # Mount the permanent storage directory
+      - /home/atharav/react/docker_app/storage/permanent_storage:/home/atharav/react/docker_app/app/permanent_storage
+      - /home/atharav/react/docker_app/storage/training_images:/home/atharav/react/docker_app/app/training_images
+      - clientfiles:/home/atharav/react/docker_app/app/clientfiles
+      - retrainfiles:/home/atharav/react/docker_app/app/retrainfiles
+      - model_repository:/home/atharav/react/docker_app/app/model_repository
 
   client:
     build:
@@ -33,4 +37,21 @@ networks:
     driver: bridge
 
 volumes:
-  permanent_storage:
+  model_repository:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/atharav/react/docker_app/model_repository
+  retrainfiles:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/atharav/react/docker_app/files/retrainfiles
+  clientfiles:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/atharav/react/docker_app/files/clientfiles

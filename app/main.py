@@ -7,7 +7,7 @@ import random
 import string
 import numpy as np
 import cv2
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -47,6 +47,9 @@ class InferenceRequest(BaseModel):
 class MetricsRequest(BaseModel):
     model_name: str
 
+class Retrain(BaseModel):
+    model_name: str
+
 @app.on_event("startup")
 async def startup_event():
     global docker_client
@@ -64,7 +67,7 @@ async def deploy_models(request_body: DeployModelsRequest):
         for container in triton_containers:
             container.remove(force=True)
 
-    required_models = {"mnist_model_onnx", "mnist_model_openvino", "mnist_model_pytorch", "bert_model_onnx"}
+    required_models = {"mnist_model_onnx", "mnist_model_openvino", "mnist_model_pytorch"}
     if not all(model in required_models for model in models):
         return JSONResponse(status_code=422, content={"detail": "Invalid model names. Use the exact model names."})
 
@@ -81,7 +84,7 @@ async def deploy_models(request_body: DeployModelsRequest):
         current_working_directory = os.getcwd()
         parent_directory = os.path.basename(os.path.dirname(current_working_directory))
         network_name = f"{parent_directory}_my_network"
-        model_repo_path = os.path.join(current_working_directory, 'model_repository')
+        model_repo_path = "/home/atharav/react/docker_app/model_repository"  # Fixed path
         logger.info(f"Current working directory: {current_working_directory}")
         logger.info(f"Model repository path: {model_repo_path}")
         logger.info(f"Network name: {network_name}")
@@ -162,7 +165,6 @@ async def inference(model_name: str = Form(...), file: UploadFile = File(...)):
             "mnist_model_onnx": "client_mnist_onnx.py",
             "mnist_model_openvino": "client_mnist_openvino.py",
             "mnist_model_pytorch": "client_mnist_pytorch.py",
-            "bert_model_onnx": "client_bert_onnx.py",
         }
         script_name = model_to_script.get(model_name)
         if not script_name:
@@ -270,3 +272,50 @@ async def get_data_shift_metrics(request_body: MetricsRequest):
     except Exception as e:
         logger.error(f"Error calculating data shift metrics: {str(e)}")
         return JSONResponse(status_code=500, content={"detail": "Failed to calculate data shift metrics"})
+    
+@app.post("/retrain/")
+async def retrain_model(request_body: Retrain, background_tasks: BackgroundTasks):
+    model_name = request_body.model_name
+
+    # Validate model name
+    if model_name not in metrics:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    retrain_model_task(model_name)
+
+    return {"message": f"Retraining of model {model_name} has completed"}
+
+def retrain_model_task(model_name: str):
+    logger.info(f"Retraining started for model {model_name}")
+    try:
+        # Simulate retraining process
+        retraining_script = {
+            "mnist_model_onnx": "retrain_mnist_onnx.py",
+            "mnist_model_openvino": "retrain_mnist_openvino.py",
+            "mnist_model_pytorch": "retrain_mnist_pytorch.py",
+        }
+        script_name = retraining_script.get(model_name)
+        if not script_name:
+            logger.error(f"No retraining script found for model {model_name}")
+            return
+        
+        script_path = f"retrainfiles/{script_name}"
+        subprocess.run(["python3", script_path])
+
+        # Reset data shift metrics after retraining
+        metrics[model_name]["data_shift"] = 0
+        metrics[model_name]["mean_shift"] = 0
+        metrics[model_name]["std_shift"] = 0
+
+        # Stop the Triton server
+        global triton_server_process
+        if triton_server_process:
+            subprocess.run(["docker", "stop", "triton_server"])
+            subprocess.run(["docker", "rm", "triton_server"])
+            logger.info("Triton server stopped")
+        
+        logger.info(f"Retraining completed for model {model_name}")
+
+    except Exception as e:
+        logger.error(f"Error during retraining of model {model_name}: {str(e)}")
+

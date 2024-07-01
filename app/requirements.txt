@@ -9,3 +9,9 @@ pillow
 pandas
 scipy
 opencv-python
+mlflow
+onnx
+onnxruntime
+torch
+torchvision
+openvino
